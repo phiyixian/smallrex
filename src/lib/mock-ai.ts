@@ -16,22 +16,22 @@ export const AI_PROVIDERS: AiProviderInfo[] = [
   {
     id: "openai",
     name: "OpenAI",
-    model: "gpt-5-vision",
+    model: "gpt-4o-mini",
     description: "Strong general reasoning, broad object recognition.",
     speed: "balanced",
   },
   {
     id: "gemini",
     name: "Google Gemini",
-    model: "gemini-2.5-pro",
+    model: "gemini-2.5-flash",
     description: "Long context, strong on diagrams & schematics.",
     speed: "fast",
   },
   {
     id: "custom",
-    name: "EV-Trained Model",
-    model: "ev-vision-v1",
-    description: "Internal model fine-tuned on EV charger faults.",
+    name: "Roboflow Model",
+    model: "phiphi/detect-and-classify-2",
+    description: "Roboflow-trained model fine-tuned on EV charger faults.",
     speed: "deep",
   },
 ];
@@ -67,10 +67,10 @@ export interface AnalysisResult {
 
 const COLOR_FOR_CATEGORY: Record<FaultCategory, string> = {
   Isolator: "#fbbf24",
-  "TNB Power Supply": "#ef4444",   // was "TNB (Power supply)"
+  "TNB Power Supply": "#ef4444", // was "TNB (Power supply)"
   Charger: "#10b981",
   "EV Distribution Board": "#22d3ee",
-  unknown: "#6b7280",              // add grey for unknown
+  unknown: "#6b7280", // add grey for unknown
 };
 
 const annotationSchema = z.object({
@@ -378,45 +378,189 @@ async function callGemini(mediaUrl: string) {
   };
 }
 
-function runCustomModel(mediaUrl: string): AnalysisResult {
-  const seed = mediaUrl.toLowerCase();
-  const def =
-    FAULT_TAXONOMY.find(
-      (f) =>
-        seed.includes(f.category.toLowerCase().split(" ")[0]) ||
-        f.observations.some((obs) =>
-          seed.includes(obs.toLowerCase().split(" ")[0]),
-        ),
-    ) ?? pick(FAULT_TAXONOMY);
-  const observation = def.observations[0];
-  const action = def.actions[0];
-  const annotations: Annotation[] = [
+/** Map a Roboflow class label (case-insensitive prefix match) to a FaultCategory. */
+function roboflowClassToCategory(label: string): FaultCategory {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("isolator")) return "Isolator";
+  if (normalized.includes("tnb") || normalized.includes("power supply"))
+    return "TNB Power Supply";
+  if (normalized.includes("charger") || normalized.includes("ev charger"))
+    return "Charger";
+  if (
+    normalized.includes("distribution") ||
+    normalized.includes("board") ||
+    normalized.includes("evdb")
+  )
+    return "EV Distribution Board";
+  return "unknown";
+}
+
+interface RoboflowPrediction {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  confidence?: number;
+  class?: string;
+}
+
+interface RoboflowClassification {
+  class?: string;
+  confidence?: number;
+}
+
+interface RoboflowOutput {
+  predictions?: {
+    image?: { width?: number | null; height?: number | null };
+    predictions?: RoboflowPrediction[];
+  };
+  detection_predictions?: {
+    image?: { width?: number | null; height?: number | null };
+    predictions?: RoboflowPrediction[];
+  };
+  classification_predictions?: RoboflowClassification[];
+}
+
+async function callRoboflow(mediaUrl: string): Promise<AnalysisResult> {
+  const apiKey = process.env.ROBOFLOW_API_KEY;
+  if (!apiKey) throw new Error("Missing ROBOFLOW_API_KEY");
+
+  const startedAt = Date.now();
+  const res = await fetch(
+    "https://serverless.roboflow.com/phiphi/workflows/detect-and-classify-2",
     {
-      x: 0.2,
-      y: 0.2,
-      w: 0.35,
-      h: 0.35,
-      label: def.category,
-      color: COLOR_FOR_CATEGORY[def.category],
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: apiKey,
+        inputs: { image: { type: "url", value: mediaUrl } },
+      }),
     },
-  ];
+  );
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "(unreadable)");
+    throw new Error(`Roboflow request failed (${res.status}): ${errBody}`);
+  }
+
+  const payload = (await res.json()) as { outputs?: RoboflowOutput[] };
+  const latencyMs = Date.now() - startedAt;
+
+  console.log("[Roboflow raw]", JSON.stringify(payload.outputs?.[0], null, 2));
+
+  const output: RoboflowOutput = payload.outputs?.[0] ?? {};
+
+  // Detections come from detection_predictions, fall back to predictions
+  const detections: RoboflowPrediction[] =
+    (output.detection_predictions?.predictions?.length
+      ? output.detection_predictions.predictions
+      : output.predictions?.predictions) ?? [];
+
+  // Image dimensions for normalizing pixel coords (may be null)
+  const imgW =
+    output.detection_predictions?.image?.width ??
+    output.predictions?.image?.width ??
+    null;
+  const imgH =
+    output.detection_predictions?.image?.height ??
+    output.predictions?.image?.height ??
+    null;
+
+  // Classification result — top entry by confidence
+  const classifications: RoboflowClassification[] =
+    output.classification_predictions ?? [];
+  const topClassification =
+    classifications.length > 0
+      ? classifications.reduce((a, b) =>
+          (b.confidence ?? 0) > (a.confidence ?? 0) ? b : a,
+        )
+      : null;
+
+  // Best detection box
+  const bestDetection =
+    detections.length > 0
+      ? detections.reduce((a, b) =>
+          (b.confidence ?? 0) > (a.confidence ?? 0) ? b : a,
+        )
+      : null;
+
+  const rawClass =
+    topClassification?.class ?? bestDetection?.class ?? null;
+  const confidence =
+    topClassification?.confidence ?? bestDetection?.confidence ?? 0;
+  const category = rawClass ? roboflowClassToCategory(rawClass) : "unknown";
+
+  // No detections — return unknown immediately
+  if (!rawClass || category === "unknown") {
+    return {
+      category: "unknown",
+      observation: "No components detected in the image.",
+      faultType: "insufficient_evidence",
+      action: "Please send a clearer photo of the fault area.",
+      confidence: 0,
+      annotations: [],
+      processingMs: latencyMs,
+      tokensUsed: 0,
+      performance: { latencyMs, promptTokens: 0, completionTokens: 0, costUsd: 0 },
+      aiProvider: "custom",
+      aiModel: "phiphi/detect-and-classify-2",
+    };
+  }
+
+  const def = FAULT_TAXONOMY.find((f) => f.category === category)!;
+
+  // Build normalized annotations from detections (cap at 3)
+  // Roboflow bbox: center x/y + width/height in pixels → convert to top-left normalized
+  const annotations: Annotation[] = (
+    imgW && imgH
+      ? detections.slice(0, 3).map((d) => {
+          const cx = d.x ?? 0;
+          const cy = d.y ?? 0;
+          const pw = d.width ?? 0;
+          const ph = d.height ?? 0;
+          return normalizeAnnotation({
+            x: (cx - pw / 2) / imgW,
+            y: (cy - ph / 2) / imgH,
+            w: pw / imgW,
+            h: ph / imgH,
+            label: d.class ?? rawClass,
+            color:
+              COLOR_FOR_CATEGORY[roboflowClassToCategory(d.class ?? rawClass)],
+          });
+        })
+      : []
+  );
+
+  // Fallback annotation when the model returned no boxes
+  if (annotations.length === 0) {
+    annotations.push(
+      normalizeAnnotation({
+        x: 0.2,
+        y: 0.2,
+        w: 0.35,
+        h: 0.35,
+        label: rawClass,
+        color: COLOR_FOR_CATEGORY[category],
+      }),
+    );
+  }
+
   return {
-    category: def.category,
-    observation,
+    category,
+    observation: def.observations[0],
     faultType: def.faultType,
-    action,
-    confidence: 0.7,
+    action: def.actions[0],
+    confidence,
     annotations,
-    processingMs: 180,
+    processingMs: latencyMs,
     tokensUsed: 0,
     performance: {
-      latencyMs: 180,
+      latencyMs,
       promptTokens: 0,
       completionTokens: 0,
       costUsd: 0,
     },
     aiProvider: "custom",
-    aiModel: "ev-vision-rule-v1",
+    aiModel: "phiphi/detect-and-classify-2",
   };
 }
 
@@ -428,7 +572,7 @@ export const analyzeWithAi = createServerFn({ method: "POST" })
     let result: AnalysisResult;
     if (provider === "openai") result = await callOpenAi(mediaUrl);
     else if (provider === "gemini") result = await callGemini(mediaUrl);
-    else result = runCustomModel(mediaUrl);
+    else result = await callRoboflow(mediaUrl);
 
     const validated = analysisSchema.parse(result);
     return {
