@@ -30,6 +30,7 @@ import {
   type AnalysisResult,
 } from "@/lib/mock-ai";
 import { supabase } from "@/integrations/supabase/client";
+import { CATEGORIES } from "@/lib/fault-taxonomy";
 
 const STORAGE_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || "ev-uploads";
 
@@ -418,12 +419,7 @@ function AnalyzePage() {
                 Detects faults across four areas:
               </p>
               <ul className="space-y-2 text-sm">
-                {[
-                  "Isolator",
-                  "TNB (Power supply)",
-                  "Charger",
-                  "EV Distribution Board",
-                ].map((c) => (
+                {CATEGORIES.map((c) => (
                   <li key={c} className="flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-primary" />
                     {c}

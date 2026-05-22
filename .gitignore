@@ -42,3 +42,39 @@ env
 *.sln
 *.sw?
 node_modules
+CLAUDE.md
+v8/
+
+# n8n stack — runtime data (never commit these)
+n8n/n8n-data/
+n8n/postgres-data/
+n8n/redis-data/
+n8n/wpp-tokens/
+n8n/wpp-userdata/
+n8n/wpp_qr.png
+
+# Python cache
+n8n/.ruff_cache/
+n8n/__pycache__/
+**/__pycache__/
+*.pyc
+
+# wppconnect-server — external codebase, tracked as nested repo
+# Commit the source but not its dependencies
+wppconnect-server/node_modules/
+wppconnect-server/dist/
+wppconnect-server/tokens/
+wppconnect-server/userdata/
+
+# Misc
+n8n_phimodified.zip
+/rexcharge-workflow.json
+credentials.json
+.secrets-bulk.json
+
+# Chatbot / handover files — not part of dashboard branch
+n8n/
+FINALIZED/
+FINALIZED.zip
+HANDOVER-PHI.md
+prt sc/
