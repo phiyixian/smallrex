@@ -5,10 +5,10 @@ Upload EV charger images/videos, run AI fault identification, and store results 
 ## What is implemented
 
 - Upload image or video and extract video frames for analysis.
-- AI provider selection: `OpenAI`, `Gemini`, `EV-Trained Model (custom rule model)`.
+- AI provider selection: `OpenAI`, `Gemini`, `Roboflow Model`.
 - Fault taxonomy coverage:
   - Isolator
-  - TNB (Power supply)
+  - TNB Power Supply
   - Charger
   - EV Distribution Board
 - Returned analysis includes:
@@ -56,6 +56,7 @@ Server-only AI keys:
 - `OPENAI_VISION_MODEL` (default: `gpt-4o-mini`)
 - `GEMINI_API_KEY`
 - `GEMINI_VISION_MODEL` (default: `gemini-2.5-flash`)
+- `ROBOFLOW_API_KEY`
 
 Optional backend admin key:
 
