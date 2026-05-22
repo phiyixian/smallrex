@@ -71,3 +71,10 @@ n8n_phimodified.zip
 /rexcharge-workflow.json
 credentials.json
 .secrets-bulk.json
+
+# Chatbot / handover files — not part of dashboard branch
+n8n/
+FINALIZED/
+FINALIZED.zip
+HANDOVER-PHI.md
+prt sc/
